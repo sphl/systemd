@@ -21,6 +21,10 @@
 #include "utf8.h"
 #include "virt.h"
 
+const char* efivarfs_path(void) {
+        return secure_getenv("SYSTEMD_EFIVARFS_PATH") ?: "/sys/firmware/efi/efivars";
+}
+
 #if ENABLE_EFI
 
 /* Reads from efivarfs sometimes fail with EINTR. Retry that many times. */
@@ -39,7 +43,7 @@ int efi_get_variable(
 
         assert(variable);
 
-        const char *p = strjoina("/sys/firmware/efi/efivars/", variable);
+        const char *p = EFIVAR_PATH(variable);
 
         if (DEBUG_LOGGING) {
                 log_debug("Reading EFI variable %s.", p);
@@ -249,7 +253,7 @@ int efi_set_variable(const char *variable, const void *value, size_t size) {
                 return 0;
         }
 
-        const char *p = strjoina("/sys/firmware/efi/efivars/", variable);
+        const char *p = EFIVAR_PATH(variable);
 
         /* Newer efivarfs protects variables that are not in an allow list with FS_IMMUTABLE_FL by default,
          * to protect them for accidental removal and modification. We are not changing these variables

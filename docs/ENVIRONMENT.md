@@ -366,6 +366,11 @@ All tools:
   `--path=` switch only very superficial validation of the specified path is
   done when this environment variable is used.
 
+* `$SYSTEMD_EFIVARFS_PATH=…` — override the path to the `efivarfs` file system
+  through which EFI variables are read and written (`/sys/firmware/efi/efivars`
+  by default). This is useful for testing and fuzzing the code that processes
+  EFI variables without access to the firmware's variables.
+
 * `$KERNEL_INSTALL_CONF_ROOT=…` — override the built in default configuration
   directory /etc/kernel/ to read files like entry-token and install.conf from.
 

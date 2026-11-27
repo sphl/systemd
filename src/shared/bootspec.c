@@ -1832,6 +1832,9 @@ int boot_config_augment_from_loader(
 
         assert(config);
 
+        /* EFIVAR_PATH() allocates on the stack, hence not in the loop */
+        const char *loader_entries_path = EFIVAR_PATH(EFI_LOADER_VARIABLE_STR("LoaderEntries"));
+
         /* Let's add the entries discovered by the boot loader to the end of our list, unless they are
          * already included there. */
 
@@ -1860,7 +1863,7 @@ int boot_config_augment_from_loader(
                                 break;
                         }
 
-                p = strdup(EFIVAR_PATH(EFI_LOADER_VARIABLE_STR("LoaderEntries")));
+                p = strdup(loader_entries_path);
                 if (!p)
                         return log_oom();
 
