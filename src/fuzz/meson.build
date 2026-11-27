@@ -17,6 +17,9 @@ simple_fuzzers += files(
 
 executables += [
         fuzz_template + {
+                'sources' : files('fuzz-bus-server.c', 'fuzz-network.c'),
+        },
+        fuzz_template + {
                 'sources' : files('fuzz-pe-binary.c'),
                 'dependencies' : libopenssl_cflags,
         },
