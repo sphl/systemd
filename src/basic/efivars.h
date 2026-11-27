@@ -6,6 +6,7 @@
 #include "sd-id128.h"
 
 #include "../fundamental/efivars.h"        /* IWYU pragma: export */
+#include "string-util.h"
 
 #define EFI_VENDOR_LOADER       SD_ID128_MAKE(4a,67,b0,82,0a,4c,41,cf,b6,c7,44,0b,29,bb,8c,4f)
 #define EFI_VENDOR_LOADER_STR   SD_ID128_MAKE_UUID_STR(4a,67,b0,82,0a,4c,41,cf,b6,c7,44,0b,29,bb,8c,4f)
@@ -34,7 +35,10 @@
 #define EFI_SYSTEMD_VARIABLE_STR(name) EFI_VENDOR_VARIABLE_STR(EFI_VENDOR_SYSTEMD_STR, name)
 #define EFI_SHIMLOCK_VARIABLE_STR(name) EFI_VENDOR_VARIABLE_STR(EFI_VENDOR_SHIMLOCK_STR, name)
 
-#define EFIVAR_PATH(variable) "/sys/firmware/efi/efivars/" variable
+/* The efivarfs mount point, /sys/firmware/efi/efivars, unless overridden with $SYSTEMD_EFIVARFS_PATH */
+const char* efivarfs_path(void);
+
+#define EFIVAR_PATH(variable) strjoina(efivarfs_path(), "/", variable)
 
 #if ENABLE_EFI
 
