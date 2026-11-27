@@ -75,6 +75,173 @@ executables += [
         },
 ]
 
+libefi_sources = files(
+        'addon-media.c',
+        'chid.c',
+        'console.c',
+        'cpio.c',
+        'device-path-util.c',
+        'devicetree.c',
+        'drivers.c',
+        'edid.c',
+        'efi-efivars.c',
+        'efi-firmware.c',
+        'efi-log.c',
+        'efi-string.c',
+        'efivar-erase.c',
+        'export-vars.c',
+        'graphics.c',
+        'hii.c',
+        'initrd.c',
+        'measure.c',
+        'measure-smbios.c',
+        'part-discovery.c',
+        'pe.c',
+        'random-seed.c',
+        'secure-boot.c',
+        'shim.c',
+        'smbios.c',
+        'sysfail.c',
+        'ticks.c',
+        'url-discovery.c',
+        'util.c',
+        'vmm.c',
+)
+
+systemd_boot_sources = files(
+        'boot.c',
+        'fwupdate.c',
+        'line-edit.c',
+        'next-boot.c',
+)
+
+# BCD parser only makes sense on arches that Windows supports.
+if host_machine.cpu_family() in ['aarch64', 'arm', 'x86_64', 'x86']
+        systemd_boot_sources += files('bcd.c')
+endif
+
+############################################################
+
+# The fuzzers below run the real sd-boot code. The EFI sources are compiled as for the EFI binaries
+# (SD_BOOT=1, freestanding, only the EFI and src/fundamental/ headers), but with the sanitizers and coverage
+# instrumentation of the fuzzer build, and are linked into a regular executable together with an in-memory
+# fake of the UEFI firmware (efi-fuzz-firmware.c, built as userspace code). The fake firmware serves files,
+# disks, EFI variables, configuration tables and a few protocols from the fuzz input, and never starts an
+# image, so no fuzz input is ever executed and nothing outside of the process is touched. libsystemd-shared
+# is not linked in, as its symbols would clash with sd-boot's, hence these are only built with a fuzzing
+# engine.
+#
+# Not where the userspace ABI aligns uint64_t to 4 bytes (32-bit x86, also when built with -m32 on
+# x86-64), as sd-boot requires the UEFI ABI (efi.h asserts alignof(uint64_t) == 8). Not with
+# MemorySanitizer: sd-boot's memcpy() and friends (efi-string.c) replace libc's for the whole program, also
+# for the uninstrumented code of the fuzzing engine, which MemorySanitizer cannot cope with.
+efi_fuzzers = (fuzzer_build and efi_arch in ['aa64', 'x64'] and
+               cc.alignment('uint64_t', prefix : '#include <stdint.h>') == 8 and
+               cc.compiles('''
+                       #if defined(__has_feature)
+                       #  if __has_feature(memory_sanitizer)
+                       #    error "MemorySanitizer"
+                       #  endif
+                       #endif
+                       ''',
+                       name : 'compiler without MemorySanitizer'))
+
+if efi_fuzzers
+        efi_fuzz_conf = configuration_data()
+        foreach name : ['HAVE_WARNING_ZERO_AS_NULL_POINTER_CONSTANT']
+                efi_fuzz_conf.set(name, conf.get(name))
+        endforeach
+        foreach attr : possible_c_attributes
+                name = 'HAVE_ATTRIBUTE_' + attr.to_upper()
+                efi_fuzz_conf.set(name, conf.get(name))
+        endforeach
+        efi_fuzz_conf.set10('ENABLE_TPM', get_option('tpm'))
+        foreach ctype : ['color-normal', 'color-entry', 'color-highlight', 'color-edit']
+                c = get_option('efi-' + ctype).split(',')
+                efi_fuzz_conf.set(ctype.underscorify().to_upper(), 'EFI_TEXT_ATTR(@0@, @1@)'.format(
+                        'EFI_' + c[0].strip().underscorify().to_upper(),
+                        'EFI_' + c[1].strip().underscorify().to_upper()))
+        endforeach
+        efi_fuzz_conf.set_quoted('PROJECT_VERSION', project_major_version)
+        efi_fuzz_conf.set_quoted('VERSION_TAG', version_tag)
+        efi_fuzz_conf.set('PROJECT_URL', conf.get('PROJECT_URL'))
+        efi_fuzz_conf.set_quoted('RELATIVE_SOURCE_PATH', relative_source_path)
+
+        configure_file(
+                output : 'efi-fuzz-config.h',
+                configuration : efi_fuzz_conf)
+
+        efi_fuzz_includes = [
+                include_directories('.'),
+                fundamental_include,
+                version_include,
+        ]
+
+        efi_fuzz_c_args = [
+                '-DSD_BOOT=1',
+                '-DSD_BOOT_FUZZ=1',
+                '-ffreestanding',
+                '-fno-strict-aliasing',
+                '-fshort-wchar',
+                '-include', 'efi-fuzz-config.h',
+                '-DEFI_MACHINE_TYPE_NAME="' + efi_arch + '"',
+                # sd-boot implements these itself, but libc, the sanitizer runtimes and the fuzzing engine
+                # need the real ones, hence rename sd-boot's.
+                '-Dabort=efi_abort',
+                '-Dfree=efi_free',
+                '-Dreaddir=efi_readdir',
+                '-D__stack_chk_fail=efi_stack_chk_fail',
+                '-D__stack_chk_fail_local=efi_stack_chk_fail_local',
+                '-D__stack_chk_guard=efi_stack_chk_guard',
+        ]
+        if want_libfuzzer
+                # Added to userspace_c_args otherwise, which the EFI sources don't use
+                efi_fuzz_c_args += '-fsanitize=fuzzer-no-link'
+        endif
+
+        # boot.c is included by the fuzzers. vmm.c is replaced by the fake firmware (it executes privileged
+        # instructions), and smbios.c is built via efi-fuzz-smbios.c (which disables its cache). Note that
+        # efi-string.c provides memcpy() and friends for the whole program.
+        efi_fuzz_sources = files('efi-fuzz-smbios.c')
+        foreach f : libefi_sources + systemd_boot_sources
+                if fs.name(f) not in ['boot.c', 'smbios.c', 'vmm.c']
+                        efi_fuzz_sources += f
+                endif
+        endforeach
+
+        libefi_fuzz = static_library(
+                'efi-fuzz',
+                fundamental_sources,
+                efi_fuzz_sources,
+                version_h,
+                include_directories : efi_fuzz_includes,
+                implicit_include_directories : false,
+                c_args : efi_fuzz_c_args,
+                gnu_symbol_visibility : 'hidden',
+                build_by_default : false)
+
+        foreach name : ['fuzz-efi-loader-conf']
+                efi_fuzz_harness = static_library(
+                        name + '-harness',
+                        files(name + '.c'),
+                        version_h,
+                        include_directories : efi_fuzz_includes,
+                        implicit_include_directories : false,
+                        c_args : efi_fuzz_c_args,
+                        build_by_default : false)
+
+                executables += fuzz_template + {
+                        'name' : name,
+                        'sources' : files('efi-fuzz-firmware.c', '../fuzz/fuzz-network.c'),
+                        'link_whole' : efi_fuzz_harness,
+                        'link_with' : libefi_fuzz,
+                        # beep() does port I/O, which a normal process may not do: efi-fuzz-firmware.c
+                        # replaces it (it is only called from boot.c, which the harnesses include)
+                        'link_args' : ['-Wl,--wrap=beep'],
+                }
+        endforeach
+endif
+
 if conf.get('ENABLE_BOOTLOADER') != 1
         subdir_done()
 endif
@@ -310,46 +477,6 @@ endif
 
 ############################################################
 
-libefi_sources = files(
-        'addon-media.c',
-        'chid.c',
-        'console.c',
-        'cpio.c',
-        'device-path-util.c',
-        'devicetree.c',
-        'drivers.c',
-        'edid.c',
-        'efi-efivars.c',
-        'efi-firmware.c',
-        'efi-log.c',
-        'efi-string.c',
-        'efivar-erase.c',
-        'export-vars.c',
-        'graphics.c',
-        'hii.c',
-        'initrd.c',
-        'measure.c',
-        'measure-smbios.c',
-        'part-discovery.c',
-        'pe.c',
-        'random-seed.c',
-        'secure-boot.c',
-        'shim.c',
-        'smbios.c',
-        'sysfail.c',
-        'ticks.c',
-        'url-discovery.c',
-        'util.c',
-        'vmm.c',
-)
-
-systemd_boot_sources = files(
-        'boot.c',
-        'fwupdate.c',
-        'line-edit.c',
-        'next-boot.c',
-)
-
 stub_sources = files(
         'boot-secret.c',
         'linux.c',
@@ -368,11 +495,6 @@ endif
 
 if host_machine.cpu_family() in ['x86', 'x86_64']
         stub_sources += files('linux_x86.c')
-endif
-
-# BCD parser only makes sense on arches that Windows supports.
-if host_machine.cpu_family() in ['aarch64', 'arm', 'x86_64', 'x86']
-        systemd_boot_sources += files('bcd.c')
 endif
 
 sources += libefi_sources
