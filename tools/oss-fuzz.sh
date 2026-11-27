@@ -40,10 +40,21 @@ else
     # chance) to be installed in the oss-fuzz execution environment.
     meson_args+=("-Doss-fuzz=true" "--auto-features=disabled" "-Dlibmount=enabled" "-Dnspawn=enabled" "-Dresolve=true")
 
+    # fuzz-exec-credential needs OpenSSL and TPM2 for the encrypted credentials it parses. systemd dlopen()s
+    # most of these libraries at runtime, and the ones the fuzzer loads are in the OSS-Fuzz runtime image.
+    # Not with MSan, which would flag the uninstrumented libraries, and not for i386, which has no :i386
+    # development packages for them.
+    feature_packages=()
+    if [[ "$SANITIZER" != memory && "$ARCHITECTURE" != i386 ]]; then
+        feature_packages=(libssl-dev libtss2-dev)
+        meson_args+=("-Dopenssl=enabled" "-Dtpm2=enabled")
+    fi
+
     apt-get update
     apt-get install -y gperf m4 gettext python3-pip \
         libmount-dev \
-        pkg-config wget python3-jinja2 zipmerge zstd
+        pkg-config wget python3-jinja2 zipmerge zstd \
+        "${feature_packages[@]}"
 
     if [[ "$ARCHITECTURE" == i386 ]]; then
         apt-get install -y pkg-config:i386 libcrypt-dev:i386 libmount-dev:i386
